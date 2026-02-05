@@ -1,0 +1,8 @@
+streamlit
+pandas
+numpy
+joblib
+plotly
+neuralforecast
+pytorch-lightning
+torch
