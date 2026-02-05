@@ -33,11 +33,15 @@ def load_lstm_model():
 
 @st.cache_data
 def load_historical_data():
-    """Load historical data from dataset.pkl"""
+    """Load historical data from cleaned_data.csv"""
     try:
-        data = joblib.load('lstm_model/dataset.pkl')
+        data = pd.read_csv('cleaned_data.csv')
         # Ensure datetime column is proper datetime type
-        if 'ds' in data.columns:
+        if 'datetime' in data.columns:
+            data['datetime'] = pd.to_datetime(data['datetime'])
+            # Rename to 'ds' for consistency with NeuralForecast
+            data = data.rename(columns={'datetime': 'ds', 'demand_mw': 'y'})
+        elif 'ds' in data.columns:
             data['ds'] = pd.to_datetime(data['ds'])
         return data
     except Exception as e:
