@@ -1,15 +1,23 @@
+import os
+# =========================================================
+# 1. FIX CRASH NUMBA (WAJIB DI PALING ATAS)
+# =========================================================
+# Mematikan kompilasi Numba agar kompatibel dengan Python 3.13 di Streamlit Cloud
+os.environ["NUMBA_DISABLE_JIT"] = "1"
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
 import plotly.graph_objects as go
-from numba import njit
+from datetime import timedelta
 
 # =========================================================
-# 1. DEFINISI ULANG FUNGSI NUMBA (WAJIB ADA)
+# 2. DEFINISI ULANG FUNGSI (WAJIB ADA)
 # =========================================================
-# Harus PERSIS sama dengan yang ada di Notebook saat training
-@njit
+# Kita gunakan fungsi Python biasa (tanpa @njit) atau dummy decorator
+# karena kita sudah set NUMBA_DISABLE_JIT = 1
+
 def rolling_mean(x, window_size):
     n = len(x)
     out = np.empty(n)
@@ -18,7 +26,6 @@ def rolling_mean(x, window_size):
         out[i] = np.mean(x[i-window_size:i])
     return out
 
-@njit
 def rolling_max(x, window_size):
     n = len(x)
     out = np.empty(n)
@@ -27,7 +34,6 @@ def rolling_max(x, window_size):
         out[i] = np.max(x[i-window_size:i])
     return out
 
-@njit
 def rolling_std(x, window_size):
     n = len(x)
     out = np.empty(n)
@@ -37,82 +43,147 @@ def rolling_std(x, window_size):
     return out
 
 # =========================================================
-# 2. SETUP HALAMAN & LOAD DATA
+# 3. SETUP & LOAD DATA
 # =========================================================
-st.set_page_config(page_title="PGCB Power Forecasting", layout="wide")
+st.set_page_config(page_title="PGCB Forecasting Dashboard", layout="wide")
 
-st.title("⚡ PGCB Power Demand Forecasting")
-st.markdown("Aplikasi prediksi beban listrik menggunakan Machine Learning (XGBoost/LGBM) dengan Feature Engineering.")
+st.title("⚡ Dashboard Prediksi Beban Listrik PGCB")
+st.markdown("""
+Aplikasi ini memprediksi beban listrik menggunakan Machine Learning.
+Silakan pilih model dan tanggal target untuk melihat analisisnya.
+""")
 
-# Load Model & Data (Cached agar cepat)
 @st.cache_resource
 def load_resources():
-    # Load model
-    model = joblib.load('forecasting_model.pkl')
-    # Load data
-    data = pd.read_csv('cleaned_data.csv')
-    data['datetime'] = pd.to_datetime(data['datetime'])
-    return model, data
+    try:
+        # Load model & data
+        model = joblib.load('forecasting_model.pkl')
+        data = pd.read_csv('cleaned_data.csv')
+        data['datetime'] = pd.to_datetime(data['datetime'])
+        return model, data
+    except Exception as e:
+        return None, str(e)
 
-try:
-    mlf, df = load_resources()
-    st.success("✅ Model & Data loaded successfully!")
-except Exception as e:
-    st.error(f"Error loading files: {e}")
+mlf, df_raw = load_resources()
+
+# Error Handling jika file tidak ketemu/rusak
+if isinstance(df_raw, str): # Jika return-nya string error
+    st.error(f"Terjadi kesalahan saat memuat model: {df_raw}")
+    st.warning("Tips: Pastikan file 'forecasting_model.pkl' dan 'cleaned_data.csv' ada di folder yang sama.")
     st.stop()
 
-# =========================================================
-# 3. INTERFACE PREDIKSI
-# =========================================================
-st.sidebar.header("Konfigurasi Forecast")
-days_to_predict = st.sidebar.slider("Jumlah Hari Prediksi:", min_value=7, max_value=90, value=30)
+df = df_raw.copy()
+last_available_date = df['datetime'].max().date()
 
-if st.sidebar.button("Mulai Prediksi"):
-    with st.spinner('Sedang melakukan forecasting...'):
-        # Lakukan prediksi
-        # MLForecast otomatis menangani lag features & rolling window secara rekursif
-        forecasts = mlf.predict(h=days_to_predict)
-        
-        # Tampilkan Hasil
-        st.subheader(f"📊 Hasil Prediksi {days_to_predict} Hari Ke Depan")
-        
-        # Plotting dengan Plotly Interactive
-        fig = go.Figure()
+# =========================================================
+# 4. SIDEBAR KONTROL
+# =========================================================
+st.sidebar.header("⚙️ Konfigurasi")
 
-        # Plot Data Historis (Ambil 90 hari terakhir saja agar grafik tidak berat)
-        last_history = df.tail(90)
+# Pilihan Model (Mendeteksi kolom model yang tersedia di MLForecast)
+# Biasanya nama modelnya 'XGB_Paper', 'LGBM_Paper', dll.
+try:
+    # Mengambil nama model dari object MLForecast jika mungkin, 
+    # atau hardcode jika kita tahu nama modelnya dari notebook training
+    available_models = list(mlf.models_.keys()) 
+except:
+    # Fallback jika struktur berbeda
+    available_models = ['XGB_Paper', 'LGBM_Paper'] 
+
+selected_model = st.sidebar.selectbox("Pilih Model:", available_models)
+
+# Pilihan Tanggal
+min_date = df['datetime'].min().date()
+# Default tanggal: 30 hari dari data terakhir
+default_date = last_available_date + timedelta(days=30) 
+
+target_date = st.sidebar.date_input(
+    "Lihat Data Hingga Tanggal:", 
+    value=default_date,
+    min_value=min_date
+)
+
+# =========================================================
+# 5. LOGIKA PREDIKSI & VISUALISASI
+# =========================================================
+
+# Hitung selisih hari dari data terakhir
+delta_days = (target_date - last_available_date).days
+
+if st.sidebar.button("Tampilkan Analisis"):
+    
+    # Container Grafik
+    fig = go.Figure()
+    
+    # 1. KASUS: TANGGAL MASA LALU (HISTORIS SAJA)
+    if delta_days <= 0:
+        st.info(f"📅 Tanggal {target_date} adalah data historis (Masa Lalu). Menampilkan data aktual.")
+        
+        # Filter data historis sampai tanggal yang dipilih
+        mask = df['datetime'].dt.date <= target_date
+        # Ambil max 90 hari ke belakang dari tanggal yang dipilih agar grafik tidak terlalu padat
+        filtered_df = df[mask].tail(90) 
+        
         fig.add_trace(go.Scatter(
-            x=last_history['datetime'], 
-            y=last_history['demand_mw'],
+            x=filtered_df['datetime'],
+            y=filtered_df['demand_mw'],
             mode='lines',
-            name='Actual (History)',
-            line=dict(color='black')
+            name='Data Aktual (History)',
+            line=dict(color='black', width=2)
         ))
-
-        # Plot Prediksi (XGBoost/LGBM)
-        # Cari kolom prediksi (biasanya nama model, misal 'XGB_Paper' atau 'LGBM_Paper')
-        pred_cols = [c for c in forecasts.columns if c != 'ds']
         
-        colors = ['red', 'blue', 'green']
-        for i, col in enumerate(pred_cols):
+        display_df = filtered_df
+        
+    # 2. KASUS: TANGGAL MASA DEPAN (FORECASTING)
+    else:
+        st.success(f"🚀 Melakukan forecasting untuk {delta_days} hari ke depan (sampai {target_date}).")
+        
+        with st.spinner('Sedang memproses model...'):
+            # Lakukan Prediksi
+            forecasts = mlf.predict(h=delta_days)
+            
+            # --- GABUNGKAN DATA ---
+            # Ambil data historis 60 hari terakhir sebagai konteks
+            history_context = df.tail(60)
+            
+            # Plot Data Historis
             fig.add_trace(go.Scatter(
-                x=forecasts['ds'], 
-                y=forecasts[col],
+                x=history_context['datetime'],
+                y=history_context['demand_mw'],
                 mode='lines',
-                name=f'Forecast ({col})',
-                line=dict(dash='dash', color=colors[i % len(colors)])
+                name='Data Aktual (Terakhir)',
+                line=dict(color='black', width=2)
             ))
+            
+            # Plot Data Prediksi (Model Terpilih)
+            if selected_model in forecasts.columns:
+                fig.add_trace(go.Scatter(
+                    x=forecasts['ds'],
+                    y=forecasts[selected_model],
+                    mode='lines',
+                    name=f'Prediksi ({selected_model})',
+                    line=dict(color='red', width=2, dash='dash')
+                ))
+            else:
+                st.error(f"Model '{selected_model}' tidak ditemukan dalam hasil prediksi.")
+            
+            display_df = forecasts
 
-        fig.update_layout(
-            title="Forecast vs History",
-            xaxis_title="Tanggal",
-            yaxis_title="Beban Listrik (MW)",
-            template="plotly_white",
-            hovermode="x unified"
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
+    # Layout Grafik
+    fig.update_layout(
+        title=f"Analisis Beban Listrik (Model: {selected_model})",
+        xaxis_title="Waktu",
+        yaxis_title="Beban (MW)",
+        hovermode="x unified",
+        template="plotly_white",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Tampilkan Tabel
+    with st.expander("Lihat Detail Data Tabel"):
+        st.dataframe(display_df)
 
-        # Tampilkan Tabel Data
-        st.subheader("📋 Data Tabel Prediksi")
-        st.dataframe(forecasts)
+else:
+    st.info("👈 Silakan atur konfigurasi di sidebar dan klik 'Tampilkan Analisis'")
