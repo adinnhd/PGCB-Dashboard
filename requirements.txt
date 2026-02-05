@@ -1,10 +1,10 @@
 streamlit
 pandas
-numpy
+numpy<2.0.0
 joblib
 plotly
-mlforecast
+mlforecast>=0.11.0
 utilsforecast
 xgboost
 lightgbm
-numba
+numba>=0.58.0
